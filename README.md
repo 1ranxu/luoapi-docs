@@ -51,22 +51,36 @@
 
 **数据库表设计**
 
-**基础功能**
+**后端**
 
-- 后端接口管理
+- 基础功能
   - 管理员可以对接口进行增删改查
+- 接口调用
+  - 开发模拟接口
+  - 调用模拟接口
+  - 保证调用的安全性（API签名认证）
+  - 客户端SDK开发
+  - 管理员发布/下线接口
+  - 申请签名
+  - 在线调用
+- 
 
-- 前端接口管理
+**前端**
+
+- 基础功能
+
   - 管理员可以访问前台查看接口
+
   - 管理员创建接口，更新接口，删除接口
 
-**接口调用**
+- 接口调用
 
-- 开发模拟接口，调用模拟接口
-- 保证调用的安全性（API签名认证）
-- 客户端SDK开发
-- 管理员发布接口与调用
-- 接口文档展示，接口在线调用
+  - 管理员发布/下线接口
+  - 用户浏览接口
+  - 用户查看接口文档
+  - 在线调用
+  - 统计用户调用接口次数
+  - 优化系统 -  API网关
 
 **接口计费与保护**
 
@@ -154,6 +168,7 @@ create table interface_info
     name           varchar(256)                       not null comment '接口名称',
     description    varchar(1024)                      null comment '接口描述',
     url            varchar(512)                       not null comment '接口地址',
+    requestParams  text                               null comment '请求参数',
     requestHeader  text                               null comment '请求头',
     responseHeader text                               null comment '响应头',
     status         tinyint  default 0                 not null comment '接口状态 0-关闭 1-开启',
@@ -165,11 +180,11 @@ create table interface_info
 );
 ```
 
-## 基础功能
+## 后端
 
-### 后端接口管理
+### 基础功能
 
-**管理员可以对接口进行增删改查**
+#### **管理员可以对接口进行增删改查**
 
 1. 使用MybatisX自动生成mapper层和service层的代码
 
@@ -532,7 +547,341 @@ public class InterfaceInfoController {
 }
 ```
 
-### 前端配置代码美化插件
+### 接口调用
+
+#### 开发模拟接口
+
+![image-20231008220820591](assets/image-20231008220820591.png)
+
+![image-20231008221011560](assets/image-20231008221011560.png)
+
+![image-20231008221526440](assets/image-20231008221526440.png)
+
+![image-20231008221220921](assets/image-20231008221220921.png)
+
+![image-20231008221327611](assets/image-20231008221327611.png)
+
+#### 调用模拟接口
+
+![image-20231008222119499](assets/image-20231008222119499.png)
+
+![image-20231008222229448](assets/image-20231008222229448.png)
+
+#### API签名认证
+
+**本质**：
+
+1. 签发签名
+2. 使用签名（校验签名）
+
+**为什么需要？**
+
+1. 保证安全性，不能随便一个人调用，必须有签发的签名
+2. 适用于无需保存登录态的场景，只认签名，不关注用户登录态
+
+**签名认证实现：**
+
+通过http request header头实现
+
+参数1：accessKey：调用者的标识。相当于用户名
+
+参数2：secretKey:密钥（复杂，无规律，无序），开通获取。相当于密码
+
+不能把secretKey放到请求头中，密钥在服务器之间传递，有可能被拦截
+
+参数3：用户参数
+
+参数4：sign，使用 参数3+加密算法生成（不可解密）服务器端用一模一样的参数和算法生成签名，只要和用户传的一致，就能通过。
+
+**防重放：**
+
+参数5：加nonce随机数，只能用一次，服务器要保存用过的随机数
+
+参数6：时间戳，校验时间戳是否过期
+
+```java
+/**
+ * 调用第三方接口的客户端
+ * @author 落樱的悔恨
+ */
+public class LuoApiClient {
+    private String accessKey;
+    private String secretKey;
+
+    public LuoApiClient(String accessKey, String secretKey) {
+        this.accessKey = accessKey;
+        this.secretKey = secretKey;
+    }
+
+
+    public Map<String,String> getHeaders(String body){
+        Map<String,String> map=new HashMap<>();
+        map.put("accessKey",accessKey);
+        // map.put("secretKey",secretKey);不能发送
+        // map.put("nonce", RandomUtil.randomNumbers(100));
+        map.put("body",body);
+        map.put("timestamp",String.valueOf(System.currentTimeMillis()+1*60*1000));
+        map.put("sign", SignUtil.genSign(body,secretKey));
+        return map;
+    }
+
+
+    public String getUsernameByPost(User user) {
+        String jsonStr = JSONUtil.toJsonStr(user);
+        HttpResponse response =  HttpRequest.post("http://localhost:8002/api/name")
+                .addHeaders(getHeaders(jsonStr))
+                .body(jsonStr)
+                .execute();
+        System.out.println(response.getStatus());
+
+        System.out.println("result = " + response.body());
+        return response.body();
+    }
+    public static void main(String[] args) {
+        LuoApiClient luoApiClient = new LuoApiClient("ranxu","abc");
+        User user = new User();
+        user.setUsername("ranxu");
+        luoApiClient.getUsernameByPost(user);
+    }
+}
+```
+
+```java
+public class SignUtil {
+    public static String genSign(String body, String secretKey){
+        Digester SHA256 = new Digester(DigestAlgorithm.SHA256);
+        String content = body + ".secretKey" + secretKey;
+        return SHA256.digestHex(content.getBytes());
+    }
+}
+```
+
+```java
+@RestController
+@RequestMapping("/name")
+public class NameController {
+    @PostMapping
+    public String getUsernameByPost(@RequestBody User user, HttpServletRequest request) {
+        String accessKey = request.getHeader("accessKey");
+        String sign = request.getHeader("sign");
+        String body = JSONUtil.toJsonStr(user);
+        String timestamp= request.getHeader("timestamp");
+        Date timestamp1 = new Date(Long.valueOf(timestamp).longValue());
+        //todo 根据accessKey查询数据库，是否存在包含改accessKey的记录
+        if (!"ranxu".equals(accessKey) ) {
+            throw new RuntimeException("无权限");
+        }
+        if (timestamp1.before(new Date())){
+            throw new RuntimeException("无权限");
+        }
+        // todo 根据记录获取secretKey
+        String dbSign = SignUtil.genSign(body, "abc");
+        if (!dbSign.equals(sign)){
+            throw new RuntimeException("无权限");
+        }
+        return "post 你的用户名：" + user.getUsername();
+    }
+}
+```
+
+#### 客户端SDK开发
+
+项目名：luoapi-client-sdk
+
+**为什么需要starter?**
+
+理想情况：开发者只需要关心调用哪些接口，传递哪些参数，就跟调用自己的代码一样
+
+开发starter的好处：开发者引入之后，可以在application.yml中写配置，自动创建客户端
+
+**starter开发流程**
+
+初始化，引入依赖
+
+spring-boot-configuration-processor的作用是自动生成配置的代码提示
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-configuration-processor</artifactId>
+    <optional>true</optional>
+</dependency>
+<dependency>
+    <groupId>org.projectlombok</groupId>
+    <artifactId>lombok</artifactId>
+    <optional>true</optional>
+</dependency>
+<dependency>
+    <groupId>cn.hutool</groupId>
+    <artifactId>hutool-all</artifactId>
+    <version>5.8.8</version>
+</dependency>
+```
+
+编写配置类
+
+```java
+@Configuration
+@ConfigurationProperties("luoapi.client")
+@Data
+@ComponentScan
+public class LuoApiClientConfig {
+
+    private String accessKey;
+    private String secretKey;
+
+    @Bean
+    public LuoApiClient luoApiClient(){
+        return new LuoApiClient(accessKey, secretKey);
+    }
+}
+```
+
+注册配置类，resources/META-INF/spring.factories文件
+
+```xml
+# springboot starter
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=com.luoying.LuoApiClientConfig
+```
+
+mvn install打包代码为本地依赖包
+
+创建新项目，测试
+
+#### 管理员发布/下线接口
+
+**接口发布**（仅管理员可操作）
+
+1. 校验该接口是否存在
+2. 判断该接口是否可以调用
+3. 修改接口数据库中接口的状态字段为1
+
+```java
+/**
+ * 发布
+ *
+ * @param idRequest
+ * @param request
+ * @return
+ */
+@PostMapping("/online")
+@AuthCheck(mustRole = "admin")
+public BaseResponse<Boolean> onlineInterfaceInfo(@RequestBody IdRequest idRequest,
+                                                 HttpServletRequest request) {
+    if (idRequest == null || idRequest.getId() <= 0) {
+        throw new BusinessException(ErrorCode.PARAMS_ERROR);
+    }
+    // 判断接口是否存在
+    long id = idRequest.getId();
+    InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+    if (oldInterfaceInfo == null) {
+        throw new BusinessException(ErrorCode.NOT_FOUND_ERROR);
+    }
+    //判断该接口是否可以调用
+    com.luoying.model.User user = new com.luoying.model.User();
+    user.setUsername("冉旭");
+    String username = luoApiClient.getUsernameByPost(user);
+    if (StringUtils.isBlank(username)){
+        throw new BusinessException(ErrorCode.SYSTEM_ERROR,"接口验证失败");
+    }
+    //修改接口数据库中接口的状态字段为1
+    oldInterfaceInfo.setStatus(InterfaceInfoStatusEnum.ONLINE.getValue());
+    boolean result = interfaceInfoService.save(oldInterfaceInfo);
+    return ResultUtils.success(result);
+}
+```
+
+**接口下线**（仅管理员可操作）
+
+1. 校验该接口是否存在
+2. 修改接口数据库中接口的状态字段为0
+
+```java
+/**
+ * 下线
+ *
+ * @param idRequest
+ * @param request
+ * @return
+ */
+@PostMapping("/offline")
+@AuthCheck(mustRole = "admin")
+public BaseResponse<Boolean> offlineInterfaceInfo(@RequestBody IdRequest idRequest,
+                                                  HttpServletRequest request) {
+    // 参数校验
+    if (idRequest == null || idRequest.getId() <= 0) {
+        throw new BusinessException(ErrorCode.PARAMS_ERROR);
+    }
+    long id = idRequest.getId();
+    // 判断接口是否存在
+    InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+    if (oldInterfaceInfo == null) {
+        throw new BusinessException(ErrorCode.NOT_FOUND_ERROR);
+    }
+    //修改接口数据库中接口的状态字段为1
+    oldInterfaceInfo.setStatus(InterfaceInfoStatusEnum.OFFLINE.getValue());
+    boolean result = interfaceInfoService.save(oldInterfaceInfo);
+    return ResultUtils.success(result);
+}
+```
+
+#### 申请签名
+
+**用户注册时自动分配**
+
+**![image-20231010205032948](assets/image-20231010205032948.png)**
+
+![image-20231010205129096](assets/image-20231010205129096.png)
+
+#### 在线调用
+
+1. 前端将用户输入的请求参数和要测试的接口id发给接口管理平台后端
+2. 调用前校验
+3. 接口管理平台后端使用sdk客户端去调用模拟接口
+
+```java
+/**
+ * 接口调用
+ *
+ * @param interfaceInfoInvokeRequest
+ * @param request
+ * @return
+ */
+@PostMapping("/invoke")
+public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvokeRequest interfaceInfoInvokeRequest,
+                                                 HttpServletRequest request) {
+    // 参数校验
+    if (interfaceInfoInvokeRequest == null || interfaceInfoInvokeRequest.getId() <= 0) {
+        throw new BusinessException(ErrorCode.PARAMS_ERROR);
+    }
+    long id = interfaceInfoInvokeRequest.getId();
+    String userRequestParams = interfaceInfoInvokeRequest.getUserRequestParams();
+    // 判断接口是否存在
+    InterfaceInfo oldInterfaceInfo = interfaceInfoService.getById(id);
+    if (oldInterfaceInfo == null) {
+        throw new BusinessException(ErrorCode.NOT_FOUND_ERROR);
+    }
+    //判断接口状态
+    if (oldInterfaceInfo.getStatus().equals(InterfaceInfoStatusEnum.OFFLINE.getValue())) {
+        throw new BusinessException(ErrorCode.PARAMS_ERROR,"接口未开放");
+    }
+    //判断该用户是否有签名
+    User loginUser = userService.getLoginUser(request);
+    String accessKey = loginUser.getAccessKey();
+    String secretKey = loginUser.getSecretKey();
+    LuoApiClient tempLuoApiClient = new LuoApiClient(accessKey, secretKey);
+    Gson gson=new Gson();
+    com.luoying.model.User user = gson.fromJson(userRequestParams, com.luoying.model.User.class);
+    String result = tempLuoApiClient.getUsernameByPost(user);
+    return ResultUtils.success(result);
+}
+```
+
+## 前端
+
+### 基础功能
+
+#### 前端配置代码美化插件
 
 1. 配置代码规范美化插件，方便快速格式化 
 
@@ -540,7 +889,7 @@ public class InterfaceInfoController {
 
 ![image-20231005152731434](assets/image-20231005152731434.png)
 
-### 自动生成后端请求代码
+#### 自动生成后端请求代码
 
 使用前端Ant Design Pro框架集成的openapi插件生成向后端发请求的代码（该插件依赖后端遵循openapi规范的swagger文档）
 
@@ -556,7 +905,7 @@ public class InterfaceInfoController {
 
 ![image-20231005155449387](assets/image-20231005155449387.png)
 
-### 修改requestErrorConfig
+#### 修改requestErrorConfig
 
 ![image-20231005160127336](assets/image-20231005160127336.png)
 
@@ -572,7 +921,7 @@ public class InterfaceInfoController {
 
 ![image-20231005160213602](assets/image-20231005160213602.png)
 
-### 测试登录接口
+#### 测试登录接口
 
 ![image-20231005195102966](assets/image-20231005195102966.png)
 
@@ -580,7 +929,7 @@ public class InterfaceInfoController {
 
 ![image-20231006143702071](assets/image-20231006143702071.png)
 
-### 管理员查看接口
+#### 管理员查看接口
 
 ![image-20231006155730790](assets/image-20231006155730790.png)
 
@@ -590,13 +939,13 @@ public class InterfaceInfoController {
 
 ![image-20231007110639157](assets/image-20231007110639157.png)
 
-### 修改路由
+#### 修改路由
 
 ![image-20231007101716582](assets/image-20231007101716582.png)
 
 ![image-20231007101808749](assets/image-20231007101808749.png)
 
-### 整体页面风格设置
+#### 整体页面风格设置
 
 ![image-20231007101912967](assets/image-20231007101912967.png)
 
@@ -606,7 +955,7 @@ public class InterfaceInfoController {
 
 ![image-20231007102254060](assets/image-20231007102254060.png)
 
-### 管理员创建接口
+#### 管理员创建接口
 
 ![image-20231007103618859](assets/image-20231007103618859.png)
 
@@ -614,7 +963,7 @@ public class InterfaceInfoController {
 
 ![image-20231007103923663](assets/image-20231007103923663.png)
 
-### 管理员更新接口
+#### 管理员更新接口
 
 ![image-20231007140905528](assets/image-20231007140905528.png)
 
@@ -626,8 +975,94 @@ public class InterfaceInfoController {
 
 ![image-20231007141636710](assets/image-20231007141636710.png)
 
-### 管理员删除接口
+#### 管理员删除接口
 
 ![image-20231007143951112](assets/image-20231007143951112.png)
 
 ![image-20231007144114294](assets/image-20231007144114294.png)
+
+### 接口调用
+
+![image-20231010163740474](assets/image-20231010163740474.png)
+
+![image-20231010163921582](assets/image-20231010163921582.png)
+
+![image-20231010162423718](assets/image-20231010162423718.png)
+
+#### 管理员发布/下线接口
+
+![image-20231010162308263](assets/image-20231010162308263.png)
+
+![image-20231010162447354](assets/image-20231010162447354.png)
+
+![image-20231010162511988](assets/image-20231010162511988.png)
+
+#### 用户浏览接口
+
+![image-20231010164942684](assets/image-20231010164942684.png)
+
+![image-20231010173927929](assets/image-20231010173927929.png)
+
+![image-20231010173616965](assets/image-20231010173616965.png)
+
+![image-20231010173706622](assets/image-20231010173706622.png)
+
+![image-20231010173800877](assets/image-20231010173800877.png)
+
+![image-20231010174228726](assets/image-20231010174228726.png)
+
+![image-20231010174317690](assets/image-20231010174317690.png)
+
+![image-20231010174409515](assets/image-20231010174409515.png)
+
+![image-20231010174454389](assets/image-20231010174454389.png)
+
+![image-20231010174523161](assets/image-20231010174523161.png)
+
+#### 用户查看接口文档
+
+![image-20231010193204277](assets/image-20231010193204277.png)
+
+![image-20231010193751738](assets/image-20231010193751738.png)
+
+![image-20231010194808697](assets/image-20231010194808697.png)
+
+![image-20231010200258552](assets/image-20231010200258552.png)
+
+![image-20231010201440599](assets/image-20231010201440599.png)
+
+![image-20231010201632255](assets/image-20231010201632255.png)
+
+![image-20231010203520963](assets/image-20231010203520963.png)
+
+![image-20231010203550258](assets/image-20231010203550258.png)
+
+![image-20231010205218800](assets/image-20231010205218800.png)
+
+#### 在线调用
+
+![image-20231011115959514](assets/image-20231011115959514.png)
+
+
+
+![image-20231011144215449](assets/image-20231011144215449.png)
+
+![image-20231011144257324](assets/image-20231011144257324.png)
+
+![image-20231011144539053](assets/image-20231011144539053.png)
+
+![image-20231011144500559](assets/image-20231011144500559.png)
+
+## todo
+
+1. 判断该接口是否可以调用，固定方法名改为根据测试地址来调用
+
+2. 用户调用接口，固定方法名改为根据测试地址来调用
+
+3. 模拟接口改为从数据库校验ak和sk
+
+4. 用户可以申请更换签名
+
+5. 把sdk上传到maven仓库
+
+   
