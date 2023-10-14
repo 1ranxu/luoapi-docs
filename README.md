@@ -53,9 +53,9 @@
 
 **后端**
 
-- 基础功能
+- **基础功能**
   - 管理员可以对接口进行增删改查
-- 接口调用
+- **接口调用**
   - 开发模拟接口
   - 调用模拟接口
   - 保证调用的安全性（API签名认证）
@@ -63,7 +63,13 @@
   - 管理员发布/下线接口
   - 申请签名
   - 在线调用
-- 
+  - 调用次数统计
+- **API网关**
+  - 网关是什么
+  - 网关的作用
+  - 网关的分类
+  - 网关的实现
+- **结合业务应用网关**
 
 **前端**
 
@@ -72,7 +78,6 @@
   - 管理员可以访问前台查看接口
 
   - 管理员创建接口，更新接口，删除接口
-
 - 接口调用
 
   - 管理员发布/下线接口
@@ -81,6 +86,8 @@
   - 在线调用
   - 统计用户调用接口次数
   - 优化系统 -  API网关
+- **接口统计**
+  - 提供可视化平台，用图表统计接口的调用情况优化整个系统的架构（API网关）
 
 **接口计费与保护**
 
@@ -93,11 +100,6 @@
 - 日志
 
 - 开通
-
-**接口统计**
-
-- 提供可视化平台，用图表展示所有接口的调用情况，便于管理
-- 接口预警
 
 ## 需求分析
 
@@ -877,6 +879,548 @@ public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvoke
 }
 ```
 
+#### 调用次数统计
+
+**需求**：
+
+1. 用户每次调用接口成功，次数加一
+2. 系统为用户分配接口调用次数或用户申请接口调用次数
+
+**业务流程**：
+
+1. 用户调用接口
+2. 修改数据库，调用次数
+
+**设计库表**
+
+用户调用接口关系表
+
+```sql
+create table user_interface_info
+(
+    id              bigint auto_increment comment '主键'
+        primary key,
+    userId          bigint                             not null comment '调用者Id',
+    interfaceInfoId bigint                             not null comment '接口id',
+    invokedNum      bigint                             not null comment '已调用次数',
+    leftNum         bigint                             not null comment '剩余调用次数',
+    status          tinyint  default 1                 not null comment '用户状态 0-限制 1-正常',
+    createTime      datetime default CURRENT_TIMESTAMP not null comment '创建时间',
+    updateTime      datetime default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
+    idDelete        tinyint  default 0                 not null comment '逻辑删除'
+
+) comment '用户调用接口关系表';
+```
+
+**步骤：**
+
+1. MybatisX生成增删改查代码
+
+2. 开发基本增删改查代码（管理员使用）
+3. 开发用户调用接口成功后，次数加一 （service)
+
+```java
+@Override
+public boolean invokeCount(long interfaceInfoId, long userId) {
+    if (interfaceInfoId <= 0 || userId <= 0){
+        throw new BusinessException(ErrorCode.PARAMS_ERROR);
+    }
+    UpdateWrapper<UserInterfaceInfo> wrapper=new UpdateWrapper<>();
+    wrapper.eq("interfaceInfoId",interfaceInfoId);
+    wrapper.eq("userId",userId);
+    wrapper.gt("leftNum",0);
+    wrapper.setSql("leftNum = leftNum - 1 , invokedNum = invokedNum + 1");
+    return this.update(wrapper);
+}
+```
+
+### API网关
+
+#### 网关是什么
+
+例如：火车站的检票口。用户在检票口统一检票，通过就可以去自己的车厢，不需要每个车厢都配置一个检票员
+
+#### 网关的作用
+
+1. **路由**
+
+网关会记录接口的信息，根据用户提供的地址和参数，转发用户的请求到对应的接口或者服务器
+
+2. **统一鉴权**
+
+无论用户访问何种接口，统一 判断用户是否有权限
+
+3. **统一处理跨域**
+
+网关统一处理跨域，不用每个项目单独重复处理跨域
+
+```yml
+#去除重复的响应头
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: dedupe_response_header_route
+        uri: https://example.org
+        filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+```
+
+![image-20231012222331819](assets/image-20231012222331819.png)
+
+4. **统一业务处理**
+
+把每个项目中相同的业务逻辑放到上层（网关）统一处理，比如本项目的接口调用次数统计
+
+5. **访问控制**
+
+设置黑白名单，例如：限制DDOS IP
+
+```yml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: remoteaddr_route
+        uri: https://example.org
+        predicates:
+        - RemoteAddr=192.168.1.1/24
+      - id: xforwarded_remoteaddr_route
+        uri: https://example.org
+        predicates:
+        - XForwardedRemoteAddr=192.168.1.1/24
+```
+
+6. **发布控制**
+
+灰度发布。例如：上线升级后的接口，升级后的接口分配20%流量，升级前的接口分配80%的流量，随着接口的稳定，为升级后的接口分配更多的流量，直到100%
+
+```yml
+#10次请求中，8次访问weighthigh,2次访问weightlow
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: weight_high
+        uri: https://weighthigh.org
+        predicates:
+        - Weight=group1, 8
+      - id: weight_low
+        uri: https://weightlow.org
+        predicates:
+        - Weight=group1, 2
+```
+
+7. **流量染色**
+
+网关给用户请求添加标识（特定请求头）
+
+**全局路由染色**
+
+![image-20231012221803280](assets/image-20231012221803280.png)
+
+```yml
+spring:
+  cloud:
+    gateway:
+      default-filters:
+        - AddRequestHeader=username, ranxu
+        - PrefixPath=/httpbin
+      routes:
+        - id: path_route1
+          uri: http://localhost:8002
+          predicates:
+            - Path=/api/name/**
+```
+
+**单路由染色**
+
+```yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: path_route1
+          uri: http://localhost:8002
+          predicates:
+            - Path=/api/name/**
+          filters:
+            - AddRequestHeader=username, ranxu
+            - AddRequestParameter=age, 18
+```
+
+8. **统一接口保护**
+
+   1. 限制请求
+
+   ![image-20231012220948924](assets/image-20231012220948924.png)
+
+   1. 信息脱敏
+
+   抹除响应中的ip信息
+
+   ![image-20231012222719358](assets/image-20231012222719358.png)
+
+   3. 降级（熔断）
+
+   服务停止，提供兜底方案，例如：提示用户该接口已下线，请访问其他可用接口
+
+   ![image-20231012214915400](assets/image-20231012214915400.png)
+
+   ```
+   <dependency>
+       <groupId>org.springframework.cloud</groupId>
+       <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+   </dependency>
+   ```
+
+   ```yml
+   spring:
+     cloud:
+       gateway:
+         routes:
+           - id: path_route1
+             uri: http://localhost:8002
+             predicates:
+               - Path=/api/name/**
+             filters:
+               - AddRequestHeader=username, ranxu
+               - AddRequestParameter=age, 18
+               - name: CircuitBreaker
+                 args:
+                   name: myCircuitBreaker
+                   fallbackUri: forward:/fallback
+           - id: fallback
+             uri: https://www.tencent.com
+             predicates:
+               - Path=/fallback
+   ```
+
+   4. 限流（学习令牌桶算法，漏桶算法，RedisLimiter）
+
+   限制单位i时间的请求次数
+
+   ![image-20231012220345514](assets/image-20231012220345514.png)
+
+   ![image-20231012221536722](assets/image-20231012221536722.png)
+
+   5. 超时时间
+
+   请求的最大处理时间，超过就强制中断
+
+   ![image-20231012222553175](assets/image-20231012222553175.png)
+
+   6. 重试
+
+   ![image-20231012221456083](assets/image-20231012221456083.png)
+
+9. **统一日志**
+
+统一记录请求和响应的信息
+
+10. **统一文档**
+
+把下游项目的文档聚合，在一个页面查看
+
+[4.2 Cloud模式聚合OpenAPI文档 | knife4j (xiaominfo.com)](https://doc.xiaominfo.com/v2/action/aggregation-cloud.html)
+
+11. **负载均衡**
+
+    在路由的基础上，根据负载均衡策略，把请求转发到集群中的某台机器
+
+    uri从固定地址改成 luoying.\*.\*
+
+#### 网关的分类
+
+1. **业务网关**（微服务网关：SPring Cloud Gateway）
+
+作用：将请求转发到不同的业务 / 项目 / 接口 / 服务，有一些业务逻辑
+
+2. **全局网关**（接入层网关：Nginx，Kong：https://github.com/Kong/kong）
+
+作用：负载均衡，请求日志，不和业务逻辑绑定
+
+参考文章：https://blog.csdn.net/qq_21040559/article/details/122961395
+
+#### 网关的实现
+
+网关技术选型：https://zhuanlan.zhihu.com/p/500587132
+
+**SPring Cloud Gateway**：性能高，可以用Java代码来写逻辑，适合学习 
+
+**官方文档**：https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/
+
+**官方示例：**https://spring.io/projects/spring-cloud-gateway#samples 可以了解编程式配置网关
+
+**核心概念：**
+
+1. 路由：根据什么条件，转发请求到哪里
+2. **断言**：一组规则，条件，确定如何转发路由
+
+   1. After 在某个时间后
+   2. Before 在某个时间前
+   3. 请求头
+   4. 请求方式
+   5. 子域名
+   6. 权重
+   7. 路径
+   8. 查询参数
+   9. 客户端地址
+
+3. **过滤器**：对请求进行一系列处理，例如添加请求头，请求参数
+
+   1. 基本功能：对请求头，响应头，请求参数的增删改查
+
+   2. 限制
+   3. 重试
+   4. 降级
+   5. 默认
+
+**请求流程：**
+
+1. 客户端发起请求
+2. Handler Mapping：根据断言，将请求转发到对应的路由 
+3. Web Handler：处理请求（过滤器层层过滤）
+4. 实际调用服务
+
+![image-20231012180030307](assets/image-20231012180030307.png)
+
+**两种引入方式：**
+
+1. 配置式（方便，规范）
+
+![image-20231012202644730](assets/image-20231012202644730.png)
+
+```yml
+#建议开启路由映射日志
+logging:
+  level:
+    org:
+      springframework:
+        cloud:
+          gateway: trace
+```
+
+![image-20231012211906156](assets/image-20231012211906156.png)
+
+2. 编程式（灵活，相对麻烦）
+
+![image-20231012173449463](assets/image-20231012173449463.png)
+
+ ![image-20231012173552449](assets/image-20231012173552449.png)
+
+![image-20231012173930673](assets/image-20231012173930673.png)
+
+![image-20231012175422300](assets/image-20231012175422300.png)
+
+### 结合业务应用网关
+
+#### **所用特性**
+
+1. 路由（网关转发请求到模拟接口）
+
+2. 统一用户鉴权
+
+3. 统一业务处理（接口调用次数统计）
+
+4. 访问控制（设置黑白名单）
+
+5. 流量染色（辨别请求是否经过网关）
+
+6. 统一日志（记录每次的请求和响应）
+
+#### **业务逻辑**
+
+1. 用户发送请求到API网关
+2. 记录请求日志
+3. 黑白名单
+4. 用户鉴权（判断ak和sk是否合法）
+5. 请求的模拟接口是否存在
+6. 请求转发，调用模拟接口
+7. 调用成功，接口调用次数加一
+8. 调用失败，返回一个规范的错误码
+9. 记录响应日志
+
+#### 具体实现
+
+1. **请求转发**
+
+使用`Path` Route Predicate
+
+匹配所有路径为：/api/xxx的请求，转发到localhost:8002/api/xxx
+
+例如请求网关 localhost:8012/api/name/hh 转发到 localhost:8002/api/name/hh
+
+```yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: api_route
+          uri: http://localhost:8002
+          predicates:
+            - Path=/api/**
+      default-filters:
+        - AddRequestHeader=username,ranxu
+```
+
+2. **编写业务逻辑**
+
+使用GlobalFilter，全局请求拦截处理
+
+![image-20231014105143394](assets/image-20231014105143394.png)
+
+因为网关项目没引入Mybatis等操作数据库的类库，无法直接进行增删改查操作，可以由back-end项目提供增删改查接口，然后远程调用back-end项目中的接口，不用重复写逻辑
+
+方法：
+
+1. HTTP 请求 （HTTPClient、RestTemplate、Feign ）
+2. RPC（Dubbo）
+
+**问题：**
+
+预期是模拟接口调用完成，才记录响应日志，统计调用次数
+
+实际上chain.filter是异步方法，直到filter过滤器返回后，才调用了模拟接口。导致响应日志，统计调用次数在调用模拟接口之前执行
+
+**解决方案：**
+
+利用response装饰者，增强原有response的处理能力
+
+参考文章：https://blog.csdn.net/qq_19636353/article/details/126759522
+
+其他文章：
+
+```java
+/**
+ * 全局过滤
+ */
+@Slf4j
+@Component
+public class CustomGlobalFilter implements GlobalFilter, Ordered {
+    private static final List<String> IP_WHITE_LIST = Arrays.asList("127.0.0.1");
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        // 1. 记录请求日志
+        ServerHttpRequest request = exchange.getRequest();
+        log.info("请求唯一标识：{}", request.getId());
+        log.info("请求路径：{}", request.getPath().value());
+        log.info("请求方法：{}", request.getMethod());
+        log.info("请求参数：{}", request.getQueryParams());
+        log.info("请求地址来源：{}", request.getRemoteAddress());
+        String sourceAddress = request.getLocalAddress().getHostString();
+        log.info("请求地址来源：{}", sourceAddress);
+        // 2. 黑白名单
+        ServerHttpResponse response = exchange.getResponse();
+        if (!IP_WHITE_LIST.contains(sourceAddress)) {
+            response.setStatusCode(HttpStatus.FORBIDDEN);
+            return response.setComplete();
+        }
+        // 3. 用户鉴权（判断ak和sk是否合法）
+        HttpHeaders headers = request.getHeaders();
+        String accessKey = headers.getFirst("accessKey");
+        String sign = headers.getFirst("sign");
+        String body = headers.getFirst("body");
+        String timestamp = headers.getFirst("timestamp");
+        Date timestamp1 = new Date(Long.valueOf(timestamp).longValue());
+        //todo 根据accessKey查询数据库，是否存在包含改accessKey的记录
+        if (!"ranxu".equals(accessKey)) {
+            return handleNoAuth(response);
+        }
+        //过期时间不能在当前时间之前
+        if (timestamp1.before(new Date())) {
+            return handleNoAuth(response);
+        }
+        // todo 根据记录获取secretKey
+        String dbSign = SignUtil.genSign(body, "abc");
+        if (!dbSign.equals(sign)) {
+            return handleNoAuth(response);
+        }
+        //todo 从数据库中查询接口是否存在，请求方法是否匹配（请求参数是否合法）
+        // 4. 请求的模拟接口是否存在
+
+        // 5. 请求转发，调用模拟接口
+        return responseLog(exchange,chain);
+    }
+
+    @Override
+    public int getOrder() {
+        return -1;
+    }
+
+    public Mono<Void> handleNoAuth(ServerHttpResponse response) {
+        response.setStatusCode(HttpStatus.FORBIDDEN);
+        return response.setComplete();
+    }
+
+    public Mono<Void> handlInvokeError(ServerHttpResponse response) {
+        response.setStatusCode(HttpStatus.INTERNAL_SERVER_ERROR);
+        return response.setComplete();
+    }
+
+    public Mono<Void> responseLog(ServerWebExchange exchange, GatewayFilterChain chain) {
+        try {
+            ServerHttpResponse originalResponse = exchange.getResponse();
+            // 缓冲区工厂缓存数据
+            DataBufferFactory bufferFactory = originalResponse.bufferFactory();
+            // 获取响应码
+            HttpStatus statusCode = originalResponse.getStatusCode();
+
+            if (statusCode == HttpStatus.OK) {
+                // 获取装饰后的Response，增强能力
+                ServerHttpResponseDecorator decoratedResponse = new ServerHttpResponseDecorator(originalResponse) {
+
+                    @Override
+                    public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
+                        log.info("body instanceof Flux: {}", (body instanceof Flux));
+                        if (body instanceof Flux) {
+                            Flux<? extends DataBuffer> fluxBody = Flux.from(body);
+                            // 等模拟接口调用完成后，才会执行
+                            return super.writeWith(fluxBody.map(dataBuffer -> {
+                                // 6. todo 调用成功，接口调用次数加一
+                                if (originalResponse.getStatusCode() == HttpStatus.OK) {
+
+                                } else {
+                                    // 7. 调用失败，返回一个规范的错误码
+
+                                }
+                                //content就是模拟接口的返回值
+                                byte[] content = new byte[dataBuffer.readableByteCount()];
+                                dataBuffer.read(content);
+                                DataBufferUtils.release(dataBuffer);//释放掉内存
+                                // 构建日志
+                                StringBuilder sb2 = new StringBuilder(200);
+                                sb2.append("<--- {} {} \n");
+                                List<Object> rspArgs = new ArrayList<>();
+                                rspArgs.add(originalResponse.getStatusCode());
+                                //rspArgs.add(requestUrl);
+                                String data = new String(content, StandardCharsets.UTF_8);//data
+                                sb2.append(data);
+                                // 8. 记录响应日志
+                                log.info("响应结果：{}",data);
+                                return bufferFactory.wrap(content);
+                            }));
+                        } else {
+                            log.error("<--- {} 响应code异常", getStatusCode());
+                        }
+                        return super.writeWith(body);
+                    }
+                };
+                //放行调用模拟接口并设置 response 对象为装饰后的，调用完模拟接口就会拼接字符串
+                return chain.filter(exchange.mutate().response(decoratedResponse).build());
+            }
+            return chain.filter(exchange);//降级处理返回数据
+        } catch (Exception e) {
+            log.error("网关处理响应异常" + e);
+            return chain.filter(exchange);
+        }
+    }
+}
+```
+
+
+
 ## 前端
 
 ### 基础功能
@@ -1064,5 +1608,7 @@ public BaseResponse<Object> invokeInterfaceInfo(@RequestBody InterfaceInfoInvoke
 4. 用户可以申请更换签名
 
 5. 把sdk上传到maven仓库
+
+6. 接口预警
 
    
