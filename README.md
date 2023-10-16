@@ -70,6 +70,11 @@
   - 网关的分类
   - 网关的实现
 - **结合业务应用网关**
+  - 所用特性
+  - 业务逻辑
+  - 具体实现
+  - 补充完整网关的业务逻辑
+
 
 **前端**
 
@@ -1419,7 +1424,165 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 }
 ```
 
+#### 补充完整网关的业务逻辑
 
+**问题**：
+
+1. 网关项目比较纯净，未引入操作数据库的包
+2. 需要调用其他项目的代码，直接复制粘贴会导致后期修改维护很麻烦
+
+**理想：**
+
+直接请求到其他项目的方法
+
+**如何调用其他项目的方法？**
+
+1. 复制粘贴代码，依赖，环境
+2. HTTP 请求 （在源项目中提供接口）
+3. RPC
+4. 打包公共的代码
+
+**HTTP 请求怎么调用：**
+
+1. 提供方开发一个接口（地址，参数，请求方法，返回值）
+2. 调用方使用HTTP Ckient之类的代码包去发送
+
+**RPC：**
+
+作用：像调用本地方法一样调用远程方法
+
+优点：
+
+1. 对开发者更透明，减少了沟通成本
+
+2. RPC 向远程服务器发送请求时，未必要使用HTTP协议，比如还可以用TCP/IP，性能更高（更实用于调用内部服务）
+
+**RPC调用模型：**
+
+![image-20231015165245853](assets/image-20231015165245853.png)
+
+**RPC实现（Dubbo框架）：**
+
+其他 RPC 框架：GRPC、TRPC
+
+官方文档：https://cn.dubbo.apache.org/zh-cn/overview/mannual/java-sdk/quick-start/spring-boot/
+
+
+
+**整合运用：**
+
+1. backend项目作为服务提供者
+   1. 根据accessKey查询数据库，是否存在包含改accessKey的记录
+   2. 根据记录获取secretKey
+   3. 从数据库中查询接口是否存在，请求方法是否匹配（请求参数是否合法）
+   4. 调用成功，接口调用次数加一
+
+2. gateway项目作为服务调用者
+
+**整合nacos和dubbo：**
+
+[Nacos | Apache Dubbo](https://cn.dubbo.apache.org/zh-cn/overview/mannual/java-sdk/reference-manual/registry/nacos/)
+
+1. 安装nacos-server，版本2.1.1
+
+2. 启动nacos
+
+```sh
+startup.cmd -m standalone
+```
+
+![image-20231016202605411](assets/image-20231016202605411.png)
+
+3. 引入依赖
+
+```xml
+<!-- Dubbo 3.0.0 及以上版本需 nacos-client 2.0.0 及以上版本 -->
+<dependency>
+    <groupId>org.apache.dubbo</groupId>
+    <artifactId>dubbo</artifactId>
+    <version>3.0.9</version>
+</dependency>
+<dependency>
+    <groupId>com.alibaba.nacos</groupId>
+    <artifactId>nacos-client</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+![image-20231016203114236](assets/image-20231016203114236.png)
+
+![image-20231016203141756](assets/image-20231016203141756.png)
+
+4. 配置并启用 Nacos
+
+```yml
+# application.yml (Spring Boot)
+dubbo:
+  application:
+    name: dubbo-springboot-demo-provider
+  protocol:
+    name: dubbo
+    port: -1
+  registry:
+    id: nacos-registry
+    address: nacos://localhost:8848
+```
+
+![image-20231016211938687](assets/image-20231016211938687.png)
+
+![image-20231016212033295](assets/image-20231016212033295.png)
+
+5. 主类设置@EnableDubbo注解
+
+![image-20231016212528210](assets/image-20231016212528210.png)
+
+![image-20231016212635194](assets/image-20231016212635194.png)
+
+6. backend项目提供服务
+
+![image-20231016213146052](assets/image-20231016213146052.png)
+
+```java
+public interface DemoService {
+
+    String sayHello(String name);
+
+    String sayHello2(String name);
+
+}
+```
+
+```java
+
+@DubboService
+public class DemoServiceImpl implements DemoService {
+
+    @Override
+    public String sayHello(String name) {
+        System.out.println("Hello " + name + ", request from consumer: " + RpcContext.getContext().getRemoteAddress());
+        return "Hello " + name;
+    }
+
+
+    @Override
+    public String sayHello2(String name) {
+        return "ranxu";
+    }
+    
+}
+```
+
+![image-20231016213325053](assets/image-20231016213325053.png)
+
+![image-20231016213420371](assets/image-20231016213420371.png)
+
+7. gateway项目消费服务
+
+![image-20231016213903469](assets/image-20231016213903469.png)
+
+![image-20231016214702907](assets/image-20231016214702907.png)
+
+![image-20231016214758765](assets/image-20231016214758765.png)
 
 ## 前端
 
