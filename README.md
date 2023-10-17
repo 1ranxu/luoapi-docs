@@ -1424,7 +1424,7 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 }
 ```
 
-#### 补充完整网关的业务逻辑
+#### RPC运用
 
 **问题**：
 
@@ -1472,10 +1472,6 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 **整合运用：**
 
 1. backend项目作为服务提供者
-   1. 根据accessKey查询数据库，是否存在包含改accessKey的记录
-   2. 根据记录获取secretKey
-   3. 从数据库中查询接口是否存在，请求方法是否匹配（请求参数是否合法）
-   4. 调用成功，接口调用次数加一
 
 2. gateway项目作为服务调用者
 
@@ -1553,7 +1549,6 @@ public interface DemoService {
 ```
 
 ```java
-
 @DubboService
 public class DemoServiceImpl implements DemoService {
 
@@ -1583,6 +1578,254 @@ public class DemoServiceImpl implements DemoService {
 ![image-20231016214702907](assets/image-20231016214702907.png)
 
 ![image-20231016214758765](assets/image-20231016214758765.png)
+
+#### 完整网关的业务逻辑
+
+**公共服务：**
+
+目的是让方法，实体类在多个项目复用
+
+1. 根据accessKey查询数据库，是否存在包含该accessKey的用户
+2. 从数据库中查询接口是否存在（请求方法，请求路径）
+3. 调用成功，接口调用次数加一（userId，interfaceInfoId）
+
+![image-20231017163529813](assets/image-20231017163529813.png)
+
+```java
+public interface CommonService {
+    /**
+     * 根据accessKey查询数据库，是否存在包含该accessKey的用户
+     *
+     * @param accessKey
+     * @return
+     */
+    User getInvokeUser(String accessKey);
+
+    /**
+     * 从数据库中查询接口是否存在（请求方法，请求路径）
+     *
+     * @param method
+     * @param url
+     * @return
+     */
+    InterfaceInfo getInvokeInterfaceInfo(String method, String url);
+
+    /**
+     * 接口调用次数统计
+     *
+     * @param interfaceInfoId
+     * @param userId
+     * @return
+     */
+    boolean invokeCount(long interfaceInfoId, long userId);
+}
+```
+
+```java
+@DubboService
+public class CommonServiceImpl implements CommonService {
+
+    @Resource
+    private UserMapper userMapper;
+
+    @Resource
+    private UserInterfaceInfoMapper userInterfaceInfoMapper;
+
+    @Resource
+    private InterfaceInfoMapper interfaceInfoMapper;
+
+    @Override
+    public User getInvokeUser(String accessKey) {
+        if (StringUtils.isBlank(accessKey)){
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        QueryWrapper<User> wrapper = new QueryWrapper<>();
+        wrapper.eq("accessKey", accessKey);
+        User user = userMapper.selectOne(wrapper);
+        if (user == null){
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"用户不存在");
+        }
+        return user;
+    }
+
+    @Override
+    public InterfaceInfo getInvokeInterfaceInfo(String method, String url) {
+        if (StringUtils.isAnyBlank(method,url)){
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        QueryWrapper<InterfaceInfo> wrapper = new QueryWrapper<>();
+        wrapper.eq("method", method);
+        wrapper.eq("url", url);
+        InterfaceInfo interfaceInfo = interfaceInfoMapper.selectOne(wrapper);
+        if (interfaceInfo == null){
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"接口不存在");
+        }
+        return interfaceInfo;
+    }
+
+    @Override
+    public boolean invokeCount(long interfaceInfoId, long userId) {
+        if (interfaceInfoId <= 0 || userId <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        QueryWrapper<UserInterfaceInfo> wrapper = new QueryWrapper<>();
+        wrapper.eq("interfaceInfoId", interfaceInfoId);
+        wrapper.eq("userId", userId);
+        wrapper.gt("leftNum", 0);
+        UserInterfaceInfo userInterfaceInfo = userInterfaceInfoMapper.selectOne(wrapper);
+
+        if (userInterfaceInfo == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"无可用次数");
+        }
+        userInterfaceInfo.setLeftNum(userInterfaceInfo.getLeftNum() - 1);
+        userInterfaceInfo.setInvokedNum(userInterfaceInfo.getInvokedNum() + 1);
+
+        if (userInterfaceInfoMapper.updateById(userInterfaceInfo) <1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"无可用次数");
+        }
+        return true;
+    }
+}
+```
+
+![image-20231017163907545](assets/image-20231017163907545.png)
+
+```java
+/**
+ * 全局过滤
+ */
+@Slf4j
+@Component
+public class CustomGlobalFilter implements GlobalFilter, Ordered {
+    private static final List<String> IP_WHITE_LIST = Arrays.asList("127.0.0.1");
+    @DubboReference
+    private CommonService commonService;
+    private static final String INTERFACE_DOMAIN = "http://localhost:8082";
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        // 1. 记录请求日志
+        ServerHttpRequest request = exchange.getRequest();
+        String sourceAddress = request.getLocalAddress().getHostString();
+        String path = request.getPath().value();
+        String method = request.getMethod().toString();
+        log.info("请求唯一标识：{}", request.getId());
+        log.info("请求路径：{}", path);
+        log.info("请求方法：{}", method);
+        log.info("请求参数：{}", request.getQueryParams());
+        log.info("请求地址来源：{}", request.getRemoteAddress());
+        log.info("请求地址来源：{}", sourceAddress);
+        // 2. 黑白名单
+        ServerHttpResponse response = exchange.getResponse();
+        if (!IP_WHITE_LIST.contains(sourceAddress)) {
+            response.setStatusCode(HttpStatus.FORBIDDEN);
+            return response.setComplete();
+        }
+        // 3. 用户鉴权（判断ak和sk是否合法）
+        HttpHeaders headers = request.getHeaders();
+        String accessKey = headers.getFirst("accessKey");
+        String sign = headers.getFirst("sign");
+        String body = headers.getFirst("body");
+        String timestamp = headers.getFirst("timestamp");
+        Date timestamp1 = new Date(Long.valueOf(timestamp).longValue());
+        //根据accessKey查询数据库，是否存在包含该accessKey的用户
+        User invokeUser = null;
+        try {
+            invokeUser = commonService.getInvokeUser(accessKey);
+        } catch (Exception e) {
+            log.error("getInvokeUser error", e);
+            return handleNoAuth(response);
+        }
+        //过期时间不能在当前时间之前
+        if (timestamp1.before(new Date())) {
+            return handleNoAuth(response);
+        }
+        //根据记录获取secretKey
+        String secretKey = invokeUser.getSecretKey();
+        String dbSign = SignUtil.genSign(body, secretKey);
+        if (!dbSign.equals(sign)) {
+            return handleNoAuth(response);
+        }
+        // 4. 请求的模拟接口是否存在
+        InterfaceInfo invokeInterfaceInfo = null;
+        try {
+            invokeInterfaceInfo = commonService.getInvokeInterfaceInfo(method, INTERFACE_DOMAIN + path);
+        } catch (Exception e) {
+            log.error("getInvokeInterfaceInfo error", e);
+            return handlInvokeError(response);
+        }
+        Long interfaceInfoId = invokeInterfaceInfo.getId();
+        Long userId = invokeUser.getId();
+        // 5. 请求转发，调用模拟接口
+        return responseLog(exchange, chain, interfaceInfoId, userId);
+    }
+    @Override
+    public int getOrder() {
+        return -1;
+    }
+    public Mono<Void> handleNoAuth(ServerHttpResponse response) {
+        response.setStatusCode(HttpStatus.FORBIDDEN);
+        return response.setComplete();
+    }
+    public Mono<Void> handlInvokeError(ServerHttpResponse response) {
+        response.setStatusCode(HttpStatus.INTERNAL_SERVER_ERROR);
+        return response.setComplete();
+    }
+    public Mono<Void> responseLog(ServerWebExchange exchange, GatewayFilterChain chain, long interfaceInfoId, long userId) {
+        try {
+            ServerHttpResponse originalResponse = exchange.getResponse();
+            // 缓冲区工厂缓存数据
+            DataBufferFactory bufferFactory = originalResponse.bufferFactory();
+            // 获取响应码
+            HttpStatus statusCode = originalResponse.getStatusCode();
+            if (statusCode == HttpStatus.OK) {
+                // 获取装饰后的Response，增强能力
+                ServerHttpResponseDecorator decoratedResponse = new ServerHttpResponseDecorator(originalResponse) {
+                    @Override
+                    public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
+                        log.info("body instanceof Flux: {}", (body instanceof Flux));
+                        if (body instanceof Flux) {
+                            Flux<? extends DataBuffer> fluxBody = Flux.from(body);
+                            // 等模拟接口调用完成后，才会执行
+                            return super.writeWith(fluxBody.map(dataBuffer -> {
+                                // 6. 调用成功，接口调用次数加一
+                                try {
+                                    commonService.invokeCount(interfaceInfoId, userId);
+                                } catch (Exception e) {
+                                    log.error("invokeCount error",e);
+                                }
+                                //content就是模拟接口的返回值
+                                byte[] content = new byte[dataBuffer.readableByteCount()];
+                                dataBuffer.read(content);
+                                DataBufferUtils.release(dataBuffer);//释放掉内存
+                                // 构建日志
+                                StringBuilder sb2 = new StringBuilder(200);
+                                sb2.append("<--- {} {} \n");
+                                List<Object> rspArgs = new ArrayList<>();
+                                rspArgs.add(originalResponse.getStatusCode());
+                                //rspArgs.add(requestUrl);
+                                String data = new String(content, StandardCharsets.UTF_8);//data
+                                sb2.append(data);
+                                // 8. 记录响应日志
+                                log.info("响应结果：{}", data);
+                                return bufferFactory.wrap(content);
+                            }));
+                        } else {
+                            log.error("<--- {} 响应code异常", getStatusCode());
+                        }
+                        return super.writeWith(body);
+                    }
+                };
+                //放行调用模拟接口并设置 response 对象为装饰后的，调用完模拟接口就会拼接字符串
+                return chain.filter(exchange.mutate().response(decoratedResponse).build());
+            }
+            return chain.filter(exchange);//降级处理返回数据
+        } catch (Exception e) {
+            log.error("网关处理响应异常" + e);
+            return chain.filter(exchange);
+        }
+    }
+}
+```
 
 ## 前端
 
