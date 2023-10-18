@@ -73,18 +73,18 @@
   - 所用特性
   - 业务逻辑
   - 具体实现
-  - 补充完整网关的业务逻辑
+  - RPC运用
+  - 完整网关的业务逻辑
+- **接口统计**
 
 
 **前端**
 
-- 基础功能
-
-  - 管理员可以访问前台查看接口
-
-  - 管理员创建接口，更新接口，删除接口
-- 接口调用
-
+- **基础功能**
+- 管理员可以访问前台查看接口
+  
+- 管理员创建接口，更新接口，删除接口
+- **接口调用**
   - 管理员发布/下线接口
   - 用户浏览接口
   - 用户查看接口文档
@@ -1827,6 +1827,77 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 }
 ```
 
+### 接口统计
+
+**需求**：获取各接口的总调用次数，按次数取前10，计算出各接口的总调用次数占比，从而分析出哪些接口没人用（减少维护，甚至下线），高频接口（增加维护，提高收费）
+
+**实现：**
+
+1. 编写接口得到示例数据
+   1. 接口A：3次
+   2. 接口B：5次
+2. SQL查询调用数据
+
+```sql
+select interfaceInfoId,sum(invokedNum) as invokeNum
+from user_interface_Info
+group by interfaceInfoId
+order by invokeNum desc
+limit 10
+```
+
+![image-20231018133631488](assets/image-20231018133631488.png)
+
+![image-20231018133908338](assets/image-20231018133908338.png)
+
+![image-20231018134028032](assets/image-20231018134028032.png)
+
+```java
+/**
+ * 接口统计分析
+ *
+ * @author 落樱的悔恨
+ */
+@RestController
+@RequestMapping("/interfaceAnalysis")
+@Slf4j
+public class AnalysisController {
+
+    @Resource
+    private UserInterfaceInfoMapper userInterfaceInfoMapper;
+
+    @Resource
+    private InterfaceInfoMapper interfaceInfoMapper;
+
+    @GetMapping("/top/interface/invoke")
+    @AuthCheck(mustRole = "admin")
+    public BaseResponse<List<InvokeInterfaceInfoVO>> getTopInvokeInterfaceInfoList(){
+        // 1. 查询调用数据
+        List<UserInterfaceInfo> userInterfaceInfoList = userInterfaceInfoMapper.getTopInvokeInterfaceInfoList(10);
+        // 2. 查询每个接口的信息
+        Map<Long, List<UserInterfaceInfo>> map = userInterfaceInfoList.stream().collect(Collectors.groupingBy(UserInterfaceInfo::getInterfaceInfoId));
+        QueryWrapper<InterfaceInfo> wrapper=new QueryWrapper<>();
+        wrapper.in("id",map.keySet());
+        List<InterfaceInfo> interfaceInfoList = interfaceInfoMapper.selectList(wrapper);
+        // 判空
+        if (CollectionUtil.isEmpty(interfaceInfoList)){
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR);
+        }
+        // 3. 组合数据
+        List<InvokeInterfaceInfoVO> invokeInterfaceInfoVOList = interfaceInfoList.stream().map(interfaceInfo -> {
+            InvokeInterfaceInfoVO invokeInterfaceInfoVO = BeanUtil.copyProperties(interfaceInfo, InvokeInterfaceInfoVO.class);
+            Long invokedNum = map.get(interfaceInfo.getId()).get(0).getInvokedNum();
+            invokeInterfaceInfoVO.setTotalInvokeNum(invokedNum);
+            return invokeInterfaceInfoVO;
+        }).collect(Collectors.toList());
+
+        return ResultUtils.success(invokeInterfaceInfoVOList);
+    }
+}
+```
+
+ 
+
 ## 前端
 
 ### 基础功能
@@ -1878,6 +1949,10 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 ![image-20231005195728380](assets/image-20231005195728380.png)
 
 ![image-20231006143702071](assets/image-20231006143702071.png)
+
+#### 测试退出登录接口
+
+![image-20231018114133093](assets/image-20231018114133093.png)
 
 #### 管理员查看接口
 
@@ -2003,18 +2078,115 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
 
 ![image-20231011144500559](assets/image-20231011144500559.png)
 
+### 接口统计
+
+使用饼图展示给管理员
+
+ECharts：[Apache ECharts](https://echarts.apache.org/zh/index.html)
+
+AntV：[AntV | 蚂蚁数据可视化 (antgroup.com)](https://antv.antgroup.com/)
+
+BizCharts
+
+
+
+**ECharts用法：**
+
+1. 看官网
+2. 阅读快速入门，引入库https://github.com/hustcc/echarts-for-react
+3. 进入示例页面
+4. 选择合适的图
+5. 在线调试
+6. 复制代码
+7. 引入真实数据
+
+1. 引库
+
+![image-20231018112737268](assets/image-20231018112737268.png)
+
+```sh
+yarn add echarts-for-reactsh
+yarn add echarts
+```
+
+![image-20231018112612287](assets/image-20231018112612287.png)
+
+![image-20231018112712231](assets/image-20231018112712231.png)
+
+2. 使用
+
+![image-20231018112846004](assets/image-20231018112846004.png)
+
+![image-20231018113015494](assets/image-20231018113015494.png)
+
+3. 复制代码
+
+![image-20231018113059384](assets/image-20231018113059384.png)
+
+![image-20231018113200268](assets/image-20231018113200268.png)
+
+4. 添加路由
+
+![image-20231018113355525](assets/image-20231018113355525.png)
+
+5. 展示
+
+![image-20231018113605589](assets/image-20231018113605589.png)
+
+6. 自动生成代码
+
+![image-20231018115041406](assets/image-20231018115041406.png)
+
+7. 引入真实数据
+
+![image-20231018120316371](assets/image-20231018120316371.png)
+
+![image-20231018120332015](assets/image-20231018120332015.png)
+
+8. 展示
+
+![image-20231018120455664](assets/image-20231018120455664.png)
+
+
+
+## 上线
+
+**前端：**参考用户中心或伙伴匹配的上线方式
+
+**后端：**
+
+- backend项目：web项目，部署spring boot的jar包（可以对外暴露）
+- interface项目：web项目，部署spring boot的jar包（不建议对外暴露）
+- gateway项目：web项目，部署spring boot的jar包（可以对外暴露）
+- 关键：三个项目网络必须连通
+- 如果是学习：单个服务器部署这三个项目，不存在跨域问题，因为使用了RPC
+- 如果有多个服务器：建议放在同一内网，内网交互会更快，也更安全
+
+
+
 ## todo
 
 1. 判断该接口是否可以调用，固定方法名改为根据测试地址来调用
 
 2. 用户调用接口，固定方法名改为根据测试地址来调用
 
-3. 模拟接口改为从数据库校验ak和sk
+3. 用户可以申请更换签名
 
-4. 用户可以申请更换签名
+4. 把sdk上传到maven仓库
 
-5. 把sdk上传到maven仓库
+5. 接口预警
 
-6. 接口预警
+6. 提前校验是否还有调用次数
 
+7. 为用户分配接口调用次数
+
+8. 在每个接口的调用界面，为每个用户显示当前接口的剩余调用次数
+
+9. 让其他用户上传接口
+
+   1. 提供界面，用户输入自己接口的服务器地址，接口信息，写入数据库
+   2.  将接口信息写入数据库之前，需要对接口进行校验（检查接口地址是否遵循规则，测试调用看是否正常）
+   3. 修改我们的sdk，提供可以调用用户上传地接口地方法，需要一直维护
+   4. 在interface_info表里添加host字段，区分服务器地址，让接口提供者更灵活地接入系统
+   
    
