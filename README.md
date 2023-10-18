@@ -2190,3 +2190,12 @@ yarn add echarts
    4. 在interface_info表里添加host字段，区分服务器地址，让接口提供者更灵活地接入系统
    
    
+
+**Ant Design Pro项目提交代码错误解决**
+
+![image-20231018140832407](assets/image-20231018140832407.png)
+
+```
+git commit --no-verify -m 'your message'
+```
+
