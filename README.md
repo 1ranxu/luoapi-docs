@@ -1,8 +1,8 @@
-# 落樱接口
+# 落接口
 
 背景：
 
-1. 前端开发需要用到后端j接口
+1. 前端开发需要用到后端接口
 2. 使用别人现成系统的功能[搏天api-免费api接口平台 (btstu.cn)](https://api.btstu.cn/)
 
 考虑：
@@ -16,7 +16,7 @@
 
 ## 项目介绍
 
-落樱接口是一个提供接口调用的平台，用户可以注册登录，开通接口调用权限，用户可以调用接口，每次调用会进行统计。
+落接口是一个提供接口调用的平台，用户可以注册登录，开通接口调用权限，用户可以调用接口，每次调用会进行统计。
 
 管理员可以发布接口，下线接口，接入接口，可视化接口的调用情况
 
@@ -183,7 +183,7 @@ create table interface_info
     userId         bigint                             not null comment '创建人',
     createTime     datetime default CURRENT_TIMESTAMP not null comment '创建时间',
     updateTime     datetime default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
-    idDelete       tinyint  default 0                 not null comment '逻辑删除'
+    isDelete       tinyint  default 0                 not null comment '逻辑删除'
 );
 ```
 
@@ -344,6 +344,22 @@ public interface InterfaceInfoService extends IService<InterfaceInfo> {
 ```
 
 ```java
+package com.luoying.service.impl;
+
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.luoying.common.ErrorCode;
+import com.luoying.exception.BusinessException;
+import com.luoying.mapper.InterfaceInfoMapper;
+import com.luoying.model.entity.InterfaceInfo;
+import com.luoying.service.InterfaceInfoService;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.stereotype.Service;
+
+/**
+ * @author 落樱的悔恨
+ * @description 针对表【interface_info】的数据库操作Service实现
+ * @createDate 2023-10-05 12:30:49
+ */
 @Service
 public class InterfaceInfoServiceImpl extends ServiceImpl<InterfaceInfoMapper, InterfaceInfo>
         implements InterfaceInfoService {
@@ -351,16 +367,7 @@ public class InterfaceInfoServiceImpl extends ServiceImpl<InterfaceInfoMapper, I
     public void validInterfaceInfo(InterfaceInfo interfaceInfo, boolean add) {
         Long id = interfaceInfo.getId();
         String name = interfaceInfo.getName();
-        String description = interfaceInfo.getDescription();
-        String url = interfaceInfo.getUrl();
-        String requestHeader = interfaceInfo.getRequestHeader();
-        String responseHeader = interfaceInfo.getResponseHeader();
-        Integer status = interfaceInfo.getStatus();
-        String method = interfaceInfo.getMethod();
-        Long userId = interfaceInfo.getUserId();
-        Date createTime = interfaceInfo.getCreateTime();
-        Date updateTime = interfaceInfo.getUpdateTime();
-        Integer idDelete = interfaceInfo.getIdDelete();
+
         if (interfaceInfo == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
@@ -1060,7 +1067,7 @@ spring:
 
    ![image-20231012220948924](assets/image-20231012220948924.png)
 
-   1. 信息脱敏
+   2. 信息脱敏
 
    抹除响应中的ip信息
 
